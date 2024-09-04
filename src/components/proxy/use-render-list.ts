@@ -79,13 +79,16 @@ export const useRenderList = (mode: string) => {
       if (hiddenInvalidNetwork) {
         let proxys = group.all.filter((item) => {
           if (item.all) {
-            return false;
+            return true;
           }
 
           if (item.history) {
             const history = item.history;
             let min = Math.min(3, history.length);
-            let recentHistory = history.slice(0, min);
+            let recentHistory = history.slice(
+              history.length - min,
+              history.length
+            );
             let hasInvalidNetwork =
               recentHistory.filter((item) => item.delay == 0).length > 0;
             if (hasInvalidNetwork) {
