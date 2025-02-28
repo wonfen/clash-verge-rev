@@ -203,7 +203,7 @@ jobs:
       - name: Get Version
         run: |
           sudo apt-get update
-          sudo apt-get install jq 
+          sudo apt-get install jq
           echo "VERSION=$(cat package.json | jq '.version' | tr -d '"')" >> $GITHUB_ENV
           echo "BUILDTIME=$(TZ=Asia/Shanghai date)" >> $GITHUB_ENV
 

@@ -6,6 +6,10 @@ permissions: write-all
 env:
   CARGO_INCREMENTAL: 0
   RUST_BACKTRACE: short
+concurrency:
+  # only allow per workflow per commit (and not pr) to run at a time
+  group: "${{ github.workflow }} - ${{ github.head_ref || github.ref }}"
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   release:
@@ -40,6 +44,7 @@ jobs:
         with:
           workspaces: src-tauri
           cache-all-crates: true
+          cache-on-failure: true
 
       - name: Install dependencies (ubuntu only)
         if: matrix.os == 'ubuntu-22.04'
@@ -234,6 +239,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          cache-all-crates: true
+          cache-on-failure: true
 
       - name: Install Node
         uses: actions/setup-node@v4
