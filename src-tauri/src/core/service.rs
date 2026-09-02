@@ -266,11 +266,19 @@ fn create_service_core_staging_file(directory: &Path, core_name: &std::ffi::OsSt
     )
 }
 
+/// The Service refuses a macOS core outside `/Applications`, and `~/Applications` is writable by
+/// the account it authenticates.
+#[cfg(all(target_os = "macos", feature = "verge-dev"))]
+const MACOS_DEV_STAGING_ROOT: &str = "/Applications";
+
 #[cfg(any(all(target_os = "macos", feature = "verge-dev"), test))]
-fn service_core_path_for(source: &Path, home: Option<&Path>, stage_for_macos_dev: bool) -> Result<PathBuf> {
+const DEV_STAGING_DIRECTORY_NAME: &str = ".clash-verge-rev-dev";
+
+#[cfg(any(all(target_os = "macos", feature = "verge-dev"), test))]
+fn service_core_path_for(source: &Path, staging_root: Option<&Path>, stage_for_macos_dev: bool) -> Result<PathBuf> {
     service_core_path_for_with_publisher(
         source,
-        home,
+        staging_root,
         stage_for_macos_dev,
         "service-core",
         |temporary_path, final_path| {
@@ -286,10 +294,10 @@ fn service_core_path_for(source: &Path, home: Option<&Path>, stage_for_macos_dev
 }
 
 #[cfg(any(all(target_os = "macos", feature = "verge-dev"), all(test, unix)))]
-fn service_tool_path_for(source: &Path, home: Option<&Path>, stage_for_macos_dev: bool) -> Result<PathBuf> {
+fn service_tool_path_for(source: &Path, staging_root: Option<&Path>, stage_for_macos_dev: bool) -> Result<PathBuf> {
     service_core_path_for_with_publisher(
         source,
-        home,
+        staging_root,
         stage_for_macos_dev,
         "service-tools",
         |temporary_path, final_path| {
@@ -308,7 +316,7 @@ fn service_tool_path_for(source: &Path, home: Option<&Path>, stage_for_macos_dev
 #[cfg_attr(not(unix), allow(unreachable_code, unused_assignments, unused_variables))]
 fn service_core_path_for_with_publisher<F>(
     source: &Path,
-    home: Option<&Path>,
+    staging_root: Option<&Path>,
     stage_for_macos_dev: bool,
     staging_directory_name: &str,
     publisher: F,
@@ -320,9 +328,9 @@ where
         return Ok(source.to_path_buf());
     }
 
-    let home = home
+    let staging_root = staging_root
         .filter(|path| !path.as_os_str().is_empty())
-        .context("HOME is unavailable for development Service core staging")?;
+        .context("development Service staging root is unavailable")?;
     let core_name = source
         .file_name()
         .filter(|name| !name.is_empty())
@@ -338,8 +346,8 @@ where
     let mut source_file = std::fs::File::open(source)
         .with_context(|| format!("failed to open development Service core source {}", source.display()))?;
 
-    let staging_directory = home
-        .join("Applications/.clash-verge-rev-dev")
+    let staging_directory = staging_root
+        .join(DEV_STAGING_DIRECTORY_NAME)
         .join(staging_directory_name);
     std::fs::create_dir_all(&staging_directory).with_context(|| {
         format!(
@@ -409,10 +417,7 @@ where
 fn macos_service_tool_path(source: &Path) -> Result<PathBuf> {
     #[cfg(feature = "verge-dev")]
     {
-        let home = std::env::var_os("HOME")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from);
-        service_tool_path_for(source, home.as_deref(), true)
+        service_tool_path_for(source, Some(Path::new(MACOS_DEV_STAGING_ROOT)), true)
     }
 
     #[cfg(not(feature = "verge-dev"))]
@@ -430,10 +435,7 @@ fn service_core_path(clash_core: &str, bin_ext: &str) -> Result<PathBuf> {
 
     #[cfg(all(target_os = "macos", feature = "verge-dev"))]
     {
-        let home = std::env::var_os("HOME")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from);
-        service_core_path_for(&sibling, home.as_deref(), true)
+        service_core_path_for(&sibling, Some(Path::new(MACOS_DEV_STAGING_ROOT)), true)
     }
 
     #[cfg(not(all(target_os = "macos", feature = "verge-dev")))]
@@ -1503,18 +1505,18 @@ mod tests {
         }
     }
 
-    fn staging_directory(home: &Path) -> PathBuf {
-        home.join("Applications/.clash-verge-rev-dev/service-core")
+    fn staging_directory(staging_root: &Path) -> PathBuf {
+        staging_root.join(".clash-verge-rev-dev/service-core")
     }
 
     #[cfg(unix)]
-    fn service_tools_staging_directory(home: &Path) -> PathBuf {
-        home.join("Applications/.clash-verge-rev-dev/service-tools")
+    fn service_tools_staging_directory(staging_root: &Path) -> PathBuf {
+        staging_root.join(".clash-verge-rev-dev/service-tools")
     }
 
     #[cfg(unix)]
-    fn staging_temporary_entries(home: &Path, core_name: &str) -> anyhow::Result<Vec<PathBuf>> {
-        let directory = staging_directory(home);
+    fn staging_temporary_entries(staging_root: &Path, core_name: &str) -> anyhow::Result<Vec<PathBuf>> {
+        let directory = staging_directory(staging_root);
         if !directory.exists() {
             return Ok(Vec::new());
         }
@@ -1532,13 +1534,13 @@ mod tests {
     #[test]
     fn nondevelopment_service_core_selection_preserves_sibling_without_staging() -> anyhow::Result<()> {
         let root = TestDirectory::new("release-path")?;
-        let home = root.path().join("home");
+        let staging_root = root.path().join("applications");
         let source = root.path().join("target/debug/verge-mihomo");
 
-        let selected = service_core_path_for(&source, Some(&home), false)?;
+        let selected = service_core_path_for(&source, Some(&staging_root), false)?;
 
         assert_eq!(selected, source);
-        assert!(!staging_directory(&home).exists());
+        assert!(!staging_directory(&staging_root).exists());
         Ok(())
     }
 
@@ -1548,15 +1550,15 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
 
         let root = TestDirectory::new("development-path")?;
-        let home = root.path().join("home");
+        let staging_root = root.path().join("applications");
         let source = root.path().join("verge-mihomo");
         std::fs::write(&source, b"development core")?;
 
-        let selected = service_core_path_for(&source, Some(&home), true)?;
+        let selected = service_core_path_for(&source, Some(&staging_root), true)?;
 
         assert_eq!(
             selected,
-            home.join("Applications/.clash-verge-rev-dev/service-core/verge-mihomo")
+            staging_root.join(".clash-verge-rev-dev/service-core/verge-mihomo")
         );
         assert_eq!(std::fs::read(&selected)?, b"development core");
         let metadata = std::fs::symlink_metadata(&selected)?;
@@ -1571,15 +1573,15 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
 
         let root = TestDirectory::new("development-service-tool")?;
-        let home = root.path().join("home");
+        let staging_root = root.path().join("applications");
         let source = root.path().join("clash-verge-service-install");
         std::fs::write(&source, b"development installer")?;
 
-        let selected = service_tool_path_for(&source, Some(&home), true)?;
+        let selected = service_tool_path_for(&source, Some(&staging_root), true)?;
 
         assert_eq!(
             selected,
-            service_tools_staging_directory(&home).join("clash-verge-service-install")
+            service_tools_staging_directory(&staging_root).join("clash-verge-service-install")
         );
         assert_eq!(std::fs::read(&selected)?, b"development installer");
         assert_ne!(std::fs::metadata(&selected)?.permissions().mode() & 0o111, 0);
@@ -1601,21 +1603,21 @@ mod tests {
     #[test]
     fn development_service_core_refresh_atomically_replaces_bytes() -> anyhow::Result<()> {
         let root = TestDirectory::new("refresh")?;
-        let home = root.path().join("home");
+        let staging_root = root.path().join("applications");
         let source = root.path().join("verge-mihomo");
         std::fs::write(&source, b"first core")?;
-        let selected = service_core_path_for(&source, Some(&home), true)?;
+        let selected = service_core_path_for(&source, Some(&staging_root), true)?;
         assert_eq!(
             selected,
-            home.join("Applications/.clash-verge-rev-dev/service-core/verge-mihomo")
+            staging_root.join(".clash-verge-rev-dev/service-core/verge-mihomo")
         );
 
         std::fs::write(&source, b"second core")?;
-        let refreshed = service_core_path_for(&source, Some(&home), true)?;
+        let refreshed = service_core_path_for(&source, Some(&staging_root), true)?;
 
         assert_eq!(refreshed, selected);
         assert_eq!(std::fs::read(&refreshed)?, b"second core");
-        assert!(staging_temporary_entries(&home, "verge-mihomo")?.is_empty());
+        assert!(staging_temporary_entries(&staging_root, "verge-mihomo")?.is_empty());
         Ok(())
     }
 
@@ -1623,16 +1625,16 @@ mod tests {
     #[test]
     fn failed_development_refresh_preserves_good_core_and_cleans_temporary_entry() -> anyhow::Result<()> {
         let root = TestDirectory::new("failed-refresh")?;
-        let home = root.path().join("home");
+        let staging_root = root.path().join("applications");
         let source = root.path().join("verge-mihomo");
         std::fs::write(&source, b"known good core")?;
-        let selected = service_core_path_for(&source, Some(&home), true)?;
+        let selected = service_core_path_for(&source, Some(&staging_root), true)?;
 
         std::fs::write(&source, b"replacement core")?;
         let publish_attempted = Cell::new(false);
         let result = service_core_path_for_with_publisher(
             &source,
-            Some(&home),
+            Some(&staging_root),
             true,
             "service-core",
             |temporary, final_path| {
@@ -1651,7 +1653,7 @@ mod tests {
         assert!(publish_attempted.get());
         assert!(error.contains("injected post-creation publish failure"));
         assert_eq!(std::fs::read(&selected)?, b"known good core");
-        assert!(staging_temporary_entries(&home, "verge-mihomo")?.is_empty());
+        assert!(staging_temporary_entries(&staging_root, "verge-mihomo")?.is_empty());
         Ok(())
     }
 
@@ -1661,16 +1663,16 @@ mod tests {
         use std::os::unix::fs::symlink;
 
         let root = TestDirectory::new("symlink")?;
-        let home = root.path().join("home");
+        let staging_root = root.path().join("applications");
         let source = root.path().join("verge-mihomo");
         std::fs::write(&source, b"selected core")?;
-        let final_path = home.join("Applications/.clash-verge-rev-dev/service-core/verge-mihomo");
+        let final_path = staging_root.join(".clash-verge-rev-dev/service-core/verge-mihomo");
         std::fs::create_dir_all(final_path.parent().unwrap_or_else(|| Path::new(".")))?;
         let symlink_target = root.path().join("must-not-change");
         std::fs::write(&symlink_target, b"target bytes")?;
         symlink(&symlink_target, &final_path)?;
 
-        let selected = service_core_path_for(&source, Some(&home), true)?;
+        let selected = service_core_path_for(&source, Some(&staging_root), true)?;
 
         assert_eq!(selected, final_path);
         assert!(std::fs::symlink_metadata(&selected)?.file_type().is_file());
